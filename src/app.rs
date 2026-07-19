@@ -103,8 +103,7 @@ impl App {
     fn status_dot_color(status: &TunnelStatus) -> Color32 {
         match status {
             TunnelStatus::Connected => Color32::from_rgb(80, 200, 80),
-            TunnelStatus::Reconnecting => Color32::from_rgb(220, 180, 0),
-            TunnelStatus::Error(_) => Color32::from_rgb(220, 60, 60),
+            TunnelStatus::Reconnecting(_) => Color32::from_rgb(220, 180, 0),
             TunnelStatus::Disconnected => Color32::from_rgb(120, 120, 120),
         }
     }
@@ -193,7 +192,7 @@ impl App {
         let status = self.tunnel_status(&tunnel_id);
         let is_running = matches!(
             status,
-            TunnelStatus::Connected | TunnelStatus::Reconnecting
+            TunnelStatus::Connected | TunnelStatus::Reconnecting(_)
         );
 
         ui.add_space(4.0);
@@ -250,16 +249,12 @@ impl App {
                 TunnelStatus::Connected => {
                     ui.label(RichText::new("Connected").color(Color32::from_rgb(80, 200, 80)));
                 }
-                TunnelStatus::Reconnecting => {
-                    ui.label(
-                        RichText::new("Reconnecting...").color(Color32::from_rgb(220, 180, 0)),
-                    );
-                }
-                TunnelStatus::Error(e) => {
-                    ui.label(
-                        RichText::new(format!("Error: {e}"))
-                            .color(Color32::from_rgb(220, 60, 60)),
-                    );
+                TunnelStatus::Reconnecting(err) => {
+                    let text = match err {
+                        Some(e) => format!("Reconnecting... ({e})"),
+                        None => "Reconnecting...".to_string(),
+                    };
+                    ui.label(RichText::new(text).color(Color32::from_rgb(220, 180, 0)));
                 }
                 TunnelStatus::Disconnected => {}
             }

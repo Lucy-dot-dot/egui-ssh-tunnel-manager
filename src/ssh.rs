@@ -19,6 +19,11 @@ pub struct Resolved {
     pub port: u16,
     pub user: String,
     pub identity_files: Vec<PathBuf>,
+    /// Public keys parsed from the configured `IdentityFile` (its `.pub` sidecar
+    /// or the `.pub` itself). When non-empty, agent auth only tries identities
+    /// matching one of these (OpenSSH `IdentitiesOnly yes`), instead of probing
+    /// every key the agent holds.
+    pub identity_pubkeys: Vec<ssh_key::PublicKey>,
     pub connect_timeout: Option<Duration>,
     pub keepalive: Option<Duration>,
 }
@@ -93,49 +98,84 @@ pub fn resolve(t: &Tunnel) -> Resolved {
     };
 
     // Identity files declared in config, plus the standard defaults if none.
-    let mut identity_files: Vec<PathBuf> = params
-        .identity_file
-        .unwrap_or_default()
-        .into_iter()
-        .map(|p| expand_tilde(&p))
-        .map(|p| {
-            // OpenSSH: a filename ending in `.pub` refers to the matching
-            // private key (the suffix is removed).
-            let s = p.to_string_lossy();
-            if let Some(stripped) = s.strip_suffix(".pub") {
-                PathBuf::from(stripped)
-            } else {
-                p
-            }
-        })
-        .filter(|p| p.is_file())
-        .collect();
-
-    if identity_files.is_empty() {
-        if let Some(dir) = ssh_dir() {
-            for name in [
-                "id_ed25519",
-                "id_ecdsa",
-                "id_rsa",
-                "id_ed25519_sk",
-                "id_ecdsa_sk",
-            ] {
-                let p = dir.join(name);
-                if p.is_file() {
-                    identity_files.push(p);
-                }
-            }
-        }
-    }
+    let (identity_files, identity_pubkeys) = collect_identities(params.identity_file);
 
     Resolved {
         hostname,
         port,
         user,
         identity_files,
+        identity_pubkeys,
         connect_timeout: params.connect_timeout,
         keepalive: params.server_alive_interval,
     }
+}
+
+/// Gather on-disk private key paths and the public keys to prefer for agent auth.
+///
+/// When `IdentityFile` is set in config, only those paths are considered (the
+/// standard default names like `id_rsa` are *not* added), and the public key is
+/// parsed from the `.pub` (the configured path itself if it ends in `.pub`, or
+/// its sidecar otherwise). Those public keys let agent auth restrict itself to
+/// the matching identity instead of probing every key the agent holds, which
+/// would blow past the server's `MaxAuthTries`.
+///
+/// When no `IdentityFile` is configured, the standard default key names are used
+/// and no public-key filter is applied (the agent may try all its keys).
+fn collect_identities(
+    configured: Option<Vec<PathBuf>>,
+) -> (Vec<PathBuf>, Vec<ssh_key::PublicKey>) {
+    let mut files = Vec::new();
+    let mut pubkeys = Vec::new();
+
+    match configured {
+        Some(paths) => {
+            for raw in paths {
+                let p = expand_tilde(&raw);
+                let is_pub = p.to_string_lossy().ends_with(".pub");
+                let pub_path = if is_pub {
+                    p.clone()
+                } else {
+                    let mut s = p.to_string_lossy().into_owned();
+                    s.push_str(".pub");
+                    PathBuf::from(s)
+                };
+                let priv_path = if is_pub {
+                    PathBuf::from(p.to_string_lossy().strip_suffix(".pub").unwrap())
+                } else {
+                    p.clone()
+                };
+
+                if pub_path.is_file() {
+                    match russh::keys::load_public_key(&pub_path) {
+                        Ok(pk) => pubkeys.push(pk),
+                        Err(e) => log::warn!("could not read public key {pub_path:?}: {e}"),
+                    }
+                }
+                if priv_path.is_file() {
+                    files.push(priv_path);
+                }
+            }
+        }
+        None => {
+            if let Some(dir) = ssh_dir() {
+                for name in [
+                    "id_ed25519",
+                    "id_ecdsa",
+                    "id_rsa",
+                    "id_ed25519_sk",
+                    "id_ecdsa_sk",
+                ] {
+                    let p = dir.join(name);
+                    if p.is_file() {
+                        files.push(p);
+                    }
+                }
+            }
+        }
+    }
+
+    (files, pubkeys)
 }
 
 /// Verify the server host key against `~/.ssh/known_hosts` (`accept-new`):
@@ -145,7 +185,7 @@ fn verify_host_key(host: &str, port: u16, key: &ssh_key::PublicKey) -> bool {
         Ok(true) => true,
         Ok(false) => true,
         Err(e) => {
-            eprintln!("host key for {host}:{port} changed: {e}");
+            log::warn!("host key for {host}:{port} changed: {e}");
             false
         }
     }
@@ -164,6 +204,24 @@ impl client::Handler for ClientHandler {
         server_public_key: &ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
         Ok(verify_host_key(&self.host, self.port, server_public_key))
+    }
+
+    async fn disconnected(
+        &mut self,
+        reason: client::DisconnectReason<Self::Error>,
+    ) -> Result<(), Self::Error> {
+        match reason {
+            client::DisconnectReason::ReceivedDisconnect(info) => {
+                log::info!(
+                    "session to {}:{} closed by server: {:?} {}",
+                    self.host, self.port, info.reason_code, info.message
+                );
+            }
+            client::DisconnectReason::Error(e) => {
+                log::info!("session to {}:{} ended: {e}", self.host, self.port);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -208,18 +266,14 @@ pub(crate) async fn authenticate(
         Err(_) => None,
     };
 
-    // 1. SSH agent (ssh-agent on Unix, Pageant / OpenSSH named pipe on Windows).
-    if try_agent_auth(session, user, rsa_hash).await? {
-        return Ok(());
-    }
-
-    // 2. Identity files from disk (unencrypted, or those we can read without a
-    //    passphrase — encrypted keys are expected to live in the agent).
+    // 1. Identity files from config (unencrypted, or those we can read without a
+    //    passphrase). Tried first so an explicit IdentityFile wins over a
+    //    flooded agent and stays within the server's MaxAuthTries.
     for path in &resolved.identity_files {
         let key = match russh::keys::load_secret_key(path, None) {
             Ok(k) => k,
             Err(e) => {
-                eprintln!("skipping identity {path:?}: {e}");
+                log::warn!("skipping identity {path:?}: {e}");
                 continue;
             }
         };
@@ -228,14 +282,19 @@ pub(crate) async fn authenticate(
             Ok(res) if res.success() => return Ok(()),
             Ok(_) => continue,
             Err(e) => {
-                eprintln!("publickey auth with {path:?} failed: {e}");
+                log::warn!("publickey auth with {path:?} failed: {e}");
                 continue;
             }
         }
     }
 
+    // 2. SSH agent (ssh-agent on Unix, Pageant / OpenSSH named pipe on Windows).
+    if try_agent_auth(session, user, rsa_hash, &resolved.identity_pubkeys).await? {
+        return Ok(());
+    }
+
     Err(anyhow!(
-        "all authentication methods failed (tried agent + {} identity file(s))",
+        "all authentication methods failed (tried {} identity file(s) + agent)",
         resolved.identity_files.len()
     ))
 }
@@ -250,13 +309,18 @@ async fn connect_agent() -> Result<DynAgent> {
     }
     #[cfg(windows)]
     {
-        // OpenSSH on Windows can expose the agent via SSH_AUTH_SOCK (named pipe);
-        // otherwise fall back to Pageant.
+        // SSH_AUTH_SOCK, if set, names the agent named pipe.
         if let Ok(sock) = std::env::var("SSH_AUTH_SOCK") {
             if !sock.is_empty() {
                 return Ok(AgentClient::connect_named_pipe(&sock).await?.dynamic());
             }
         }
+        // Default OpenSSH Authentication Agent service pipe (Windows 10+);
+        // this is where KeePassXC's SSH-agent integration exposes keys.
+        if let Ok(agent) = AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await {
+            return Ok(agent.dynamic());
+        }
+        // Pageant fallback.
         Ok(AgentClient::connect_pageant().await?.dynamic())
     }
 }
@@ -265,18 +329,49 @@ async fn try_agent_auth(
     session: &mut client::Handle<ClientHandler>,
     user: &str,
     rsa_hash: Option<HashAlg>,
+    preferred: &[ssh_key::PublicKey],
 ) -> Result<bool> {
     let mut agent = match connect_agent().await {
         Ok(a) => a,
-        Err(_) => return Ok(false),
+        Err(e) => {
+            log::warn!("agent: not available ({e})");
+            return Ok(false);
+        }
     };
 
     let identities = match agent.request_identities().await {
         Ok(v) => v,
-        Err(_) => return Ok(false),
+        Err(e) => {
+            log::warn!("agent: request_identities failed: {e}");
+            return Ok(false);
+        }
     };
 
-    for identity in identities {
+    // When preferred public keys are known (from a configured IdentityFile),
+    // only try the matching agent identities. This mirrors OpenSSH's
+    // `IdentitiesOnly yes` and keeps us within the server's MaxAuthTries.
+    let candidates: Vec<_> = if preferred.is_empty() {
+        log::info!("agent: {} identity(ies) offered", identities.len());
+        identities
+    } else {
+        let total = identities.len();
+        let matches: Vec<_> = identities
+            .into_iter()
+            .filter(|id| preferred.iter().any(|p| p == id.public_key().as_ref()))
+            .collect();
+        log::info!(
+            "agent: {}/{} offered identit(y/ies) match the configured public key(s)",
+            matches.len(),
+            total
+        );
+        matches
+    };
+
+    for identity in candidates {
+        if session.is_closed() {
+            log::info!("agent: session closed; stopping");
+            break;
+        }
         let authenticated = match &identity {
             AgentIdentity::PublicKey { key, .. } => {
                 session
@@ -294,7 +389,13 @@ async fn try_agent_auth(
             Ok(res) if res.success() => return Ok(true),
             Ok(_) => continue,
             Err(e) => {
-                eprintln!("agent identity failed: {e}");
+                log::warn!("agent identity failed: {e}");
+                if session.is_closed() {
+                    log::warn!(
+                        "agent: session closed by server (likely MaxAuthTries exceeded); stopping"
+                    );
+                    break;
+                }
                 continue;
             }
         }

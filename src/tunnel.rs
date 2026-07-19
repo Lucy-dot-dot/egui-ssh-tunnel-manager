@@ -53,8 +53,8 @@ fn unique_id() -> String {
 pub enum TunnelStatus {
     Disconnected,
     Connected,
-    Reconnecting,
-    Error(String),
+    /// Last error from the reconnect loop, if any (`None` for a clean session end).
+    Reconnecting(Option<String>),
 }
 
 pub struct TunnelHandle {
@@ -102,7 +102,7 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 }
 
 pub fn start_tunnel(tunnel: Tunnel) -> TunnelHandle {
-    let status = Arc::new(Mutex::new(TunnelStatus::Reconnecting));
+    let status = Arc::new(Mutex::new(TunnelStatus::Reconnecting(None)));
     let stop_flag = Arc::new(AtomicBool::new(false));
 
     let join = runtime().spawn(run_tunnel_loop(
@@ -126,21 +126,23 @@ async fn run_tunnel_loop(
     stop_flag: Arc<AtomicBool>,
 ) {
     while !stop_flag.load(Ordering::SeqCst) {
-        match serve_forward(&tunnel, &status, &stop_flag).await {
+        let last_error = match serve_forward(&tunnel, &status, &stop_flag).await {
             ForwardResult::Stopped => break,
             ForwardResult::Err(msg) => {
-                *status.lock().unwrap() = TunnelStatus::Error(msg);
+                log::error!("[{}] tunnel error: {msg}", tunnel.name);
+                Some(msg)
             }
             ForwardResult::Ended => {
-                // Session ended without an explicit error; reconnect.
+                log::info!("[{}] session ended; reconnecting", tunnel.name);
+                None
             }
-        }
+        };
 
         if stop_flag.load(Ordering::SeqCst) {
             break;
         }
 
-        *status.lock().unwrap() = TunnelStatus::Reconnecting;
+        *status.lock().unwrap() = TunnelStatus::Reconnecting(last_error);
 
         // Backoff, but stay responsive to a stop request.
         let mut waited = Duration::ZERO;
@@ -230,7 +232,7 @@ async fn serve_forward(
                         tokio::spawn(pipe_data(socket, channel));
                     }
                     Err(e) => {
-                        eprintln!("failed to open direct-tcpip channel: {e}");
+                        log::warn!("failed to open direct-tcpip channel: {e}");
                     }
                 }
             }
