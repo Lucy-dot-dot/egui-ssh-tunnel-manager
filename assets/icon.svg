@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#131c30"/>
+      <stop offset="1" stop-color="#1d2f52"/>
+    </linearGradient>
+    <linearGradient id="wire" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="0.55" stop-color="#34d399"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="14" y="14" width="484" height="484" rx="108" fill="url(#bg)"/>
+  <circle cx="256" cy="250" r="196" fill="#ffffff" opacity="0.03"/>
+
+  <!-- tunnel arch -->
+  <path d="M116 372 V240 A140 140 0 0 1 396 240 V372" fill="none" stroke="url(#wire)" stroke-width="42" stroke-linecap="round"/>
+  <path d="M116 372 V240 A140 140 0 0 1 396 240 V372" fill="none" stroke="#131c30" stroke-width="12" stroke-dasharray="4 34" stroke-linecap="round"/>
+
+  <!-- terminal prompt -->
+  <polyline points="210,276 240,304 210,332" fill="none" stroke="#e8eef7" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="262" y1="330" x2="302" y2="330" stroke="#e8eef7" stroke-width="18" stroke-linecap="round"/>
+
+  <!-- local machine -->
+  <rect x="74" y="372" width="84" height="56" rx="10" fill="#e8eef7"/>
+  <rect x="86" y="384" width="60" height="32" rx="5" fill="#34d399"/>
+
+  <!-- remote server -->
+  <rect x="354" y="372" width="84" height="24" rx="8" fill="#e8eef7"/>
+  <rect x="354" y="404" width="84" height="24" rx="8" fill="#e8eef7"/>
+  <circle cx="372" cy="384" r="5" fill="#38bdf8"/>
+  <circle cx="372" cy="416" r="5" fill="#50c850"/>
+
+  <!-- status dot (app "connected" color) -->
+  <circle cx="402" cy="110" r="28" fill="#50c850" stroke="#131c30" stroke-width="10"/>
+</svg>

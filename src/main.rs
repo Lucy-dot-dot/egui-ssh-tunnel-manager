@@ -45,11 +45,20 @@ fn main() -> eframe::Result<()> {
     init_log();
     log::info!("starting ssh-tunnel manager");
 
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
+        .map(std::sync::Arc::new)
+        .ok();
+
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("SSH Tunnel Manager")
+        .with_inner_size([700.0, 480.0])
+        .with_min_inner_size([500.0, 300.0]);
+    if let Some(icon) = icon {
+        viewport = viewport.with_icon(icon);
+    }
+
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("SSH Tunnel Manager")
-            .with_inner_size([700.0, 480.0])
-            .with_min_inner_size([500.0, 300.0]),
+        viewport,
         ..Default::default()
     };
 
