@@ -6,7 +6,7 @@ use anyhow::{Result, anyhow};
 use russh::keys::HashAlg;
 use russh::keys::agent::client::{AgentClient, AgentStream};
 use russh::keys::ssh_key;
-use russh::keys::{PrivateKeyWithHashAlg, check_known_hosts};
+use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate, check_known_hosts};
 use russh::{Disconnect, client};
 use russh::keys::agent::AgentIdentity;
 use ssh2_config::{ParseRule, SshConfig};
@@ -201,9 +201,13 @@ impl client::Handler for ClientHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &ssh_key::PublicKey,
+        server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        Ok(verify_host_key(&self.host, self.port, server_public_key))
+        Ok(verify_host_key(
+            &self.host,
+            self.port,
+            &server_public_key.public_key(),
+        ))
     }
 
     async fn disconnected(
