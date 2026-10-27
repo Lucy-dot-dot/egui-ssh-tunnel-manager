@@ -7,7 +7,7 @@ edition = "2024"
 eframe = { version = "0.37.0", default-features = false, features = ["clipboard", "glow", "default_fonts"]}
 egui = { version = "0.37.0", default-features = false, features = ["default_fonts"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = "1.0.154"
 dirs = "7.0.0"
 
 ssh2-config = { git = "https://github.com/veeso/ssh2-config", tag = "v0.7.1", default-features = false }
