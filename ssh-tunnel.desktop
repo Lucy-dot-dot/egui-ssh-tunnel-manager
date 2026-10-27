@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=SSH Tunnel Manager
+GenericName=SSH Tunnel Manager
+Comment=Manage SSH port forwards
+Exec=/home/lucys/.cargo/bin/ssh-tunnel
+Icon=ssh-tunnel
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=ssh;tunnel;port;forward;
+StartupWMClass=ssh-tunnel
